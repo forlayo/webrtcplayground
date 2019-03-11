@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">WebRTCPlayground</string>
+    <string name="support_toast_cancelled">Cancelled!</string>
+    <string name="support_toast_screensharing_is_needed">Screen sharing is needed for support call!</string>
+    <string name="support_call">Call</string>
+    <string name="support_incall_close">Close call</string>
+    <string name="support_toast_connected">Remote peer is connected.</string>
+    <string name="support_toast_disconnected">Remote peer is disconnected.</string>
+    <string name="support_toast_called_having_a_call">Getting OFFER having a call, this will end the current one</string>
+</resources>
