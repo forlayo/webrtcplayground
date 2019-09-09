@@ -28,7 +28,7 @@ dependencies {
     implementation 'com.android.support.constraint:constraint-layout:1.1.3'
 
     // Official WebRTC SDK prebuilt, take care of updating this one as they usually add breaking changes.
-    implementation 'org.webrtc:google-webrtc:1.0.26405'
+    implementation 'org.webrtc:google-webrtc:1.0.28513'
 
     // Lombok, to have the code clean
     compileOnly 'org.projectlombok:lombok:1.18.4'

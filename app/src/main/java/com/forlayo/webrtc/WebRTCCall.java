@@ -26,6 +26,7 @@ import org.webrtc.MediaStream;
 import org.webrtc.PeerConnection;
 import org.webrtc.PeerConnectionFactory;
 import org.webrtc.RendererCommon;
+import org.webrtc.RtpReceiver;
 import org.webrtc.ScreenCapturerAndroid;
 import org.webrtc.SdpObserver;
 import org.webrtc.SessionDescription;
@@ -43,7 +44,9 @@ import java.lang.ref.WeakReference;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 1.- Get the intent of screen capture permission.
@@ -55,6 +58,11 @@ import java.util.List;
 public class WebRTCCall implements IWebRTCCall {
 
     private static final String TAG = WebRTCCall.class.getCanonicalName();
+
+    // It should be Unified-Plan as legacy option "Plan-B" is going to be deprecated.
+    // https://webrtc.org/web-apis/chrome/unified-plan/
+    private static final PeerConnection.SdpSemantics SDP_SEMANTICS = PeerConnection.SdpSemantics.UNIFIED_PLAN;
+
     private final ProxyVideoSink remoteCameraProxyRenderer = new ProxyVideoSink();
     private final ProxyVideoSink remoteScreenProxyRenderer = new ProxyVideoSink();
     private final ProxyVideoSink localProxyVideoSink = new ProxyVideoSink();
@@ -244,8 +252,6 @@ public class WebRTCCall implements IWebRTCCall {
                 }
             }
         };
-
-        createPeerConnection();
     }
 
     private AudioTrack createAudioTrack() {
@@ -290,8 +296,13 @@ public class WebRTCCall implements IWebRTCCall {
         rtcConfig.bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE;
         rtcConfig.rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE;
         rtcConfig.continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY;
+
         // Use ECDSA encryption.
         rtcConfig.keyType = PeerConnection.KeyType.ECDSA;
+
+        // Plan-B or the new Unified Plan.
+        rtcConfig.sdpSemantics = SDP_SEMANTICS;
+
         peerConnection = factory.createPeerConnection(rtcConfig, new CustomPeerConnectionObserver("localPeerCreation") {
             @Override
             public void onIceCandidate(IceCandidate iceCandidate) {
@@ -302,7 +313,7 @@ public class WebRTCCall implements IWebRTCCall {
             @Override
             public void onAddStream(MediaStream mediaStream) {
                 super.onAddStream(mediaStream);
-                gotRemoteStream(mediaStream);
+                //gotRemoteStream(mediaStream);
             }
 
             @Override
@@ -349,49 +360,124 @@ public class WebRTCCall implements IWebRTCCall {
                 dataChannel = channel;
                 dataChannel.registerObserver(dataChannelObserver);
             }
+
+            @Override
+            public void onSignalingChange(PeerConnection.SignalingState signalingState) {
+                super.onSignalingChange(signalingState);
+                Log.d(TAG,"onSignalingChange() called with: signalingState = [" + signalingState + "]");
+                if(signalingState == PeerConnection.SignalingState.HAVE_REMOTE_OFFER){
+                    peerConnection.addTrack(screenVideoBundle.localVideoTrack);
+                    peerConnection.addTrack(cameraVideoBundle.localVideoTrack);
+                    peerConnection.addTrack(localAudioTrack);
+                }
+            }
+
+            @Override
+            public void onAddTrack(RtpReceiver rtpReceiver, MediaStream[] mediaStreams) {
+                super.onAddTrack(rtpReceiver, mediaStreams);
+                Log.d(TAG,"onAddTrack()");
+                runOnUiThread(() -> {
+                    try {
+                        if (rtpReceiver.track() instanceof VideoTrack) {
+                            VideoTrack videoTrack = (VideoTrack) rtpReceiver.track();
+                            if (!screenSet.getAndSet(true)) {
+                                videoTrack.addSink(remoteScreenProxyRenderer);
+                                remoteScreenProxyRenderer.setTarget(remoteScreenVideoView);
+                                return;
+                            }
+
+                            if (!cameraSet.getAndSet(true)) {
+                                videoTrack.addSink(remoteCameraProxyRenderer);
+                                remoteCameraProxyRenderer.setTarget(remoteCameraVideoView);
+                                return;
+                            }
+                        }
+
+                    }catch (Exception ex) {
+                        ex.printStackTrace();
+                    }
+                });
+
+            }
         });
 
-        addStreamToLocalPeer();
     }
 
+    AtomicBoolean cameraSet = new AtomicBoolean(false);
+    AtomicBoolean screenSet = new AtomicBoolean(false);
+
     private void addStreamToLocalPeer() {
-        //creating local mediastream
-        MediaStream stream = factory.createLocalMediaStream("RemoteSupport");
-        stream.addTrack(screenVideoBundle.localVideoTrack);
-        if (cameraVideoBundle.localVideoTrack != null)
-            stream.addTrack(cameraVideoBundle.localVideoTrack);
-        if (localAudioTrack != null)
-            stream.addTrack(localAudioTrack);
-        peerConnection.addStream(stream);
+
+        Log.d(TAG,"addStreamToLocalPeer()");
+        if(SDP_SEMANTICS == PeerConnection.SdpSemantics.UNIFIED_PLAN) {
+
+            peerConnection.addTransceiver(screenVideoBundle.localVideoTrack);
+            peerConnection.addTransceiver(cameraVideoBundle.localVideoTrack);
+            peerConnection.addTransceiver(localAudioTrack);
+
+            // New Unified Plan, 1.0 WebRTC :)
+//            peerConnection.addTrack(screenVideoBundle.localVideoTrack, Collections.singletonList("screen"));
+//            if (cameraVideoBundle.localVideoTrack != null)
+//                peerConnection.addTrack(cameraVideoBundle.localVideoTrack, Collections.singletonList("camera"));
+//            if (localAudioTrack != null)
+//                peerConnection.addTrack(localAudioTrack, Collections.singletonList("camera-audio"));
+
+        }else{
+            // Legacy Plan-B mode.
+            MediaStream stream = factory.createLocalMediaStream("RemoteSupport");
+            stream.addTrack(screenVideoBundle.localVideoTrack);
+            if(cameraVideoBundle.localVideoTrack!=null)
+                stream.addTrack(cameraVideoBundle.localVideoTrack);
+            if(localAudioTrack!=null)
+                stream.addTrack(localAudioTrack);
+            peerConnection.addStream(stream);
+        }
     }
 
     private void gotRemoteStream(MediaStream stream) {
         Log.d(TAG, "gotRemoteStream() " + stream.getId());
 
-        //we have remote video stream, add camera to renderer.
-        for (VideoTrack videoTrack : stream.videoTracks) {
-            Log.d(TAG, "videoTrack:" + videoTrack.id());
-            if (videoTrack.id().equalsIgnoreCase(cameraVideoBundle.name)) {
-                runOnUiThread(() -> {
-                    try {
-                        videoTrack.addSink(remoteCameraProxyRenderer);
-                        remoteCameraProxyRenderer.setTarget(remoteCameraVideoView);
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
-                });
+        if(SDP_SEMANTICS == PeerConnection.SdpSemantics.UNIFIED_PLAN) {
+            // New Unified Plan, 1.0 WebRTC :)
+            //if (stream.getId().equalsIgnoreCase(cameraVideoBundle.name)) {
+            runOnUiThread(() -> {
+                try {
+                    stream.videoTracks.get(0).addSink(remoteCameraProxyRenderer);
+                    remoteCameraProxyRenderer.setTarget(remoteCameraVideoView);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            });
+            return;
+            //}
 
-            } else if (videoTrack.id().equalsIgnoreCase(screenVideoBundle.name)) {
-                runOnUiThread(() -> {
-                    try {
-                        videoTrack.addSink(remoteScreenProxyRenderer);
-                        remoteScreenProxyRenderer.setTarget(remoteScreenVideoView);
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
-                });
+        }else {
+            //we have remote video stream, add camera to renderer.
+            for (VideoTrack videoTrack : stream.videoTracks) {
+                Log.d(TAG, "videoTrack:" + videoTrack.id());
+                if (videoTrack.id().equalsIgnoreCase(cameraVideoBundle.name)) {
+                    runOnUiThread(() -> {
+                        try {
+                            videoTrack.addSink(remoteCameraProxyRenderer);
+                            remoteCameraProxyRenderer.setTarget(remoteCameraVideoView);
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
+                    });
+
+                } else if (videoTrack.id().equalsIgnoreCase(screenVideoBundle.name)) {
+                    runOnUiThread(() -> {
+                        try {
+                            videoTrack.addSink(remoteScreenProxyRenderer);
+                            remoteScreenProxyRenderer.setTarget(remoteScreenVideoView);
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
+                    });
+                }
             }
         }
+        Log.e(TAG,"Haven't found tracks! :/");
 
     }
 
@@ -409,6 +495,8 @@ public class WebRTCCall implements IWebRTCCall {
     @Override
     public void call() {
         initWebRTC();
+        createPeerConnection();
+        addStreamToLocalPeer();
         doOffer();
     }
 
@@ -463,6 +551,9 @@ public class WebRTCCall implements IWebRTCCall {
 
         factory.dispose();
         rootEglBase.release();
+
+        cameraSet.set(false);
+        screenSet.set(false);
     }
 
     private void disposeBundle(VideoBundle bundle) {
@@ -551,6 +642,7 @@ public class WebRTCCall implements IWebRTCCall {
             }
 
             initWebRTC();
+            createPeerConnection();
             //Can't use CustomSdpObserver with overriding here, webrtc is using this interface here in a
             //weird manner and your going to get an exception.
             peerConnection.setRemoteDescription(
